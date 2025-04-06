@@ -368,7 +368,8 @@ def ondemand_demo():
 
 
 def main():
-    example()
+    # example()
+    ondemand_demo()
     #test_static_power()
     # multi_program()
 
