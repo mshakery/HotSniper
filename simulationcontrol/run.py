@@ -380,7 +380,7 @@ def asg2_multi_threading_experiments():
         # ^ not needed
         for threads in range(1, 5):
             inst = get_instance(benchmark, threads, input_set='simsmall')
-            print(f"[MULT-THR] {benchmark} @ {threads} threads → {inst}")
+            print("[MULT-THR] {benchmark} @ {threads} threads → {inst}".format(benchmark=benchmark, threads=threads, inst=inst))
             run(base_cfg, inst)
 
 
@@ -390,8 +390,8 @@ def asg2_symmetric_dvfs_experiments():
     for benchmark in benches:
         inst = get_instance(benchmark, 4, input_set='simsmall')
         for f in freqs:
-            base_cfg = [f"{f:.1f}GHz", 'testStaticPower', 'slowDVFS']
-            print(f"[SYM-DVFS] {benchmark} @ {f:.1f}GHz → {inst}")
+            base_cfg = ["{0}GHz".format(f), 'testStaticPower', 'slowDVFS']
+            print("[SYM-DVFS] {benchmark} @ {f}GHz → {inst}".format(benchmark=benchmark, f=f, inst=inst))
             run(base_cfg, inst)
 
 
@@ -407,7 +407,7 @@ def asg2_asymmetric_dvfs_experiments():
         for name, freqs in patterns.items():
             # include e.g. 'core0:4.0GHz' etc. in your base.cfg
             base_cfg = freqs + ['maxFreq', 'slowDVFS']
-            print(f"[AsymDVFS:{name}] {benchmark} → {inst}")
+            print("[AsymDVFS:{name}] {benchmark} → {inst}".format(name=name, benchmark=benchmark, inst=inst))
             run(base_cfg, inst)
 
 
@@ -425,7 +425,7 @@ def asg2_thread_migration_experiments():
         inst = get_instance(benchmark, 4, input_set='simsmall')
         for name, extra in policies.items():
             base_cfg = ['4.0GHz','maxFreq','slowDVFS'] + extra
-            print(f"[Migration:{name}] {benchmark} → {inst}")
+            print("[Migration:{name}] {benchmark} → {inst}".format(name=name, benchmark=benchmark, inst=inst))
             run(base_cfg, inst)
 
 
@@ -436,7 +436,8 @@ def asg2_multiprogramming_experiments():
         inst_b = get_instance('parsec-streamcluster', b_threads, input_set='simsmall')
         bench_str = inst_a + ',' + inst_b
         base_cfg = ['4.0GHz','maxFreq','slowDVFS']
-        print(f"[MP:{a_threads}+{b_threads}] BS→{inst_a}  SC→{inst_b}")
+        print("[MP:{a_threads}+{b_threads}] BS→{inst_a}  SC→{inst_b}".format(a_threads=a_threads, b_threads=b_threads,
+                                                                             inst_a=inst_a, inst_b=inst_b))
         run(base_cfg, bench_str)
 
 
