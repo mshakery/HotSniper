@@ -372,14 +372,84 @@ def coldestcore_demo():
     run(['{:.1f}GHz'.format(2.4), 'maxFreq', 'slowDVFS', 'coldestCore'], get_instance('parsec-blackscholes', 3, input_set='simsmall'))
 
 
+def asg2_multi_threading_experiments():
+    base_cfg = ['4.0GHz', 'maxFreq', 'slowDVFS']
+    for benchmark in ('parsec-blackscholes', 'parsec-streamcluster'):
+        plsm = get_feasible_parallelisms(benchmark)
+        min_parallelism, max_parallelism = plsm[0], plsm[-1]
+        # ^ not needed
+        for threads in range(1, 5):
+            inst = get_instance(benchmark, threads, input_set='simsmall')
+            print(f"[MULT-THR] {benchmark} @ {threads} threads → {inst}")
+            run(base_cfg, inst)
+
+
+def asg2_symmetric_dvfs_experiments():
+    benches = ('parsec-blackscholes', 'parsec-streamcluster')
+    freqs = [1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0]
+    for benchmark in benches:
+        inst = get_instance(benchmark, 4, input_set='simsmall')
+        for f in freqs:
+            base_cfg = [f"{f:.1f}GHz", 'testStaticPower', 'slowDVFS']
+            print(f"[SYM-DVFS] {benchmark} @ {f:.1f}GHz → {inst}")
+            run(base_cfg, inst)
+
+
+def asg2_asymmetric_dvfs_experiments():
+    benches = ('parsec-blackscholes', 'parsec-streamcluster')
+    patterns = {
+        '1H-3L': ['4.0GHz','1.0GHz','1.0GHz','1.0GHz'],
+        '2H-2L': ['4.0GHz','4.0GHz','1.0GHz','1.0GHz'],
+        '3H-1L': ['4.0GHz','4.0GHz','4.0GHz','1.0GHz'],
+    }
+    for benchmark in benches:
+        inst = get_instance(benchmark, 4, input_set='simsmall')
+        for name, freqs in patterns.items():
+            # include e.g. 'core0:4.0GHz' etc. in your base.cfg
+            base_cfg = freqs + ['maxFreq', 'slowDVFS']
+            print(f"[AsymDVFS:{name}] {benchmark} → {inst}")
+            run(base_cfg, inst)
+
+
+def asg2_thread_migration_experiments():
+    benches = ('parsec-blackscholes', 'parsec-streamcluster')
+    policies = {
+        'static':                [],
+        'mig_10ms':              ['migrate10ms'],
+        'mig_1ms':               ['migrate1ms'],
+        'mig_100us':             ['migrate100us'],
+        'thrMigration_20pct':    ['thrMigration20'],
+        'thrMigration_50pct':    ['thrMigration50'],
+    }
+    for benchmark in benches:
+        inst = get_instance(benchmark, 4, input_set='simsmall')
+        for name, extra in policies.items():
+            base_cfg = ['4.0GHz','maxFreq','slowDVFS'] + extra
+            print(f"[Migration:{name}] {benchmark} → {inst}")
+            run(base_cfg, inst)
+
+
+def asg2_multiprogramming_experiments():
+    splits = [(1,3), (2,2), (3,1)]
+    for a_threads, b_threads in splits:
+        inst_a = get_instance('parsec-blackscholes', a_threads, input_set='simsmall')
+        inst_b = get_instance('parsec-streamcluster', b_threads, input_set='simsmall')
+        bench_str = inst_a + ',' + inst_b
+        base_cfg = ['4.0GHz','maxFreq','slowDVFS']
+        print(f"[MP:{a_threads}+{b_threads}] BS→{inst_a}  SC→{inst_b}")
+        run(base_cfg, bench_str)
+
+
 def main():
     # example()
-    ondemand_demo()
+    # ondemand_demo()
     #test_static_power()
     # multi_program()
 
     # example_symmetric_perforation()
     # example_asymmetric_perforation()
-    
+    asg2_multi_threading_experiments()
+
+
 if __name__ == '__main__':
     main()
