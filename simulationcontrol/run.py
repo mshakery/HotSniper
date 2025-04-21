@@ -20,6 +20,10 @@ SNIPER_BASE = os.path.dirname(HERE)
 BENCHMARKS = os.path.join(SNIPER_BASE, 'benchmarks')
 BATCH_START = datetime.datetime.now().strftime('%Y-%m-%d_%H.%M')
 
+# Define the default frequency values
+DEFAULT_MIN_FREQ = 1.0  # GHz
+DEFAULT_MAX_FREQ = 4.0  # GHz
+
 
 def change_base_configuration(base_configuration):
     base_cfg = os.path.join(SNIPER_BASE, 'config/base.cfg')
@@ -109,42 +113,172 @@ def save_output(base_configuration, benchmark, console_output, cpistack, started
     create_plots(run)
 
 
+def generate_core_config(base_configuration):
+    """
+    Generate per-core configuration strings based on the base_configuration entries.
+    This supports both symmetric and asymmetric DVFS configurations.
+    
+    Returns:
+        A tuple of (dvfs_config, core_freq_config) where:
+        - dvfs_config: Command-line parameters for the DVFS settings
+        - core_freq_config: Dictionary mapping core numbers to frequencies for per-core overrides
+    """
+    # Default to empty configurations
+    dvfs_config = ""
+    core_freq_config = {}
+    
+    # Check if we have per-core frequency settings (asymmetric DVFS)
+    core_freqs = []
+    for cfg in base_configuration:
+        # Match patterns like '4.0GHz', '1.0GHz', etc.
+        if cfg.endswith('GHz') and ':' not in cfg:
+            try:
+                freq = float(cfg.replace('GHz', ''))
+                # This is a global frequency setting
+                dvfs_config += " -g perf_model/core/frequency=%s" % freq
+            except ValueError:
+                pass
+        
+        # Match patterns like 'core0:4.0GHz', 'core1:1.0GHz', etc.
+        elif 'core' in cfg and ':' in cfg and cfg.endswith('GHz'):
+            try:
+                core_part, freq_part = cfg.split(':')
+                core_num = int(core_part.replace('core', ''))
+                freq = float(freq_part.replace('GHz', ''))
+                
+                # Add to our per-core frequency mapping
+                core_freq_config[core_num] = freq
+                core_freqs.append(freq)
+            except (ValueError, IndexError):
+                pass
+    
+    # If we have per-core frequencies, add them to the configuration
+    for core_num, freq in core_freq_config.items():
+        dvfs_config += " -g perf_model/core/%d/frequency=%s" % (core_num, freq)
+    
+    # Enable migration configuration if needed
+    migration_enabled = False
+    migration_epoch = "1000000"  # Default migration epoch (1ms)
+    
+    if "migrate10ms" in base_configuration:
+        migration_epoch = "10000000"  # 10ms
+        migration_enabled = True
+    elif "migrate100us" in base_configuration:
+        migration_epoch = "100000"  # 100Î¼s
+        migration_enabled = True
+    elif "coldestCore" in base_configuration:
+        migration_enabled = True
+    
+    if migration_enabled:
+        dvfs_config += " -g scheduler/open/migration/logic=coldestCore"
+        dvfs_config += " -g scheduler/open/migration/epoch=%s" % migration_epoch
+    else:
+        dvfs_config += " -g scheduler/open/migration/logic=off"
+    
+    # Configure DVFS logic based on configuration
+    dvfs_logic = "off"
+    if "maxFreq" in base_configuration:
+        dvfs_logic = "maxFreq"
+    elif "ondemand" in base_configuration:
+        dvfs_logic = "ondemand"
+    elif "testStaticPower" in base_configuration:
+        dvfs_logic = "testStaticPower"
+    
+    # Add DVFS logic configuration
+    dvfs_config += " -g scheduler/open/dvfs/logic=%s" % dvfs_logic
+    
+    # Configure DVFS epoch (how often to adjust frequency)
+    dvfs_epoch = "1000000"  # Default is 1ms
+    if "fastDVFS" in base_configuration:
+        dvfs_epoch = "100000"  # 100Î¼s
+    elif "mediumDVFS" in base_configuration:
+        dvfs_epoch = "250000"  # 250Î¼s
+    elif "slowDVFS" in base_configuration:
+        dvfs_epoch = "1000000"  # 1ms
+    
+    dvfs_config += " -g scheduler/open/dvfs/dvfs_epoch=%s" % dvfs_epoch
+    dvfs_config += " -g dvfs/transition_latency=2000"  # Add realistic transition latency
+    
+    # Add DVFS min/max frequency settings
+    min_freq = DEFAULT_MIN_FREQ
+    max_freq = DEFAULT_MAX_FREQ
+    
+    # Override with any explicit min/max freq in base_configuration
+    for cfg in base_configuration:
+        if cfg.startswith("min_freq="):
+            try:
+                min_freq = float(cfg.split("=")[1])
+            except (ValueError, IndexError):
+                pass
+        elif cfg.startswith("max_freq="):
+            try:
+                max_freq = float(cfg.split("=")[1])
+            except (ValueError, IndexError):
+                pass
+    
+    dvfs_config += " -g scheduler/open/dvfs/min_frequency=%s" % min_freq
+    dvfs_config += " -g scheduler/open/dvfs/max_frequency=%s" % max_freq
+    
+    return dvfs_config, core_freq_config
+
 def run(base_configuration, benchmark, ignore_error=False, perforation_script: str = None):
+    """
+    Run a simulation with the given base configuration and benchmark.
+    
+    Args:
+        base_configuration: List of configuration options
+        benchmark: The benchmark to run
+        ignore_error: Whether to ignore errors during execution
+        perforation_script: Optional perforation script
+    """
     print('running {} with configuration {}'.format(benchmark, '+'.join(base_configuration)))
     started = datetime.datetime.now()
+    
+    # Apply configuration changes to base.cfg
     change_base_configuration(base_configuration)
-
+    
+    # Clean up from previous runs
     prev_run_cleanup()
-
+    
+    # Generate DVFS and per-core frequency configurations
+    dvfs_config, core_freq_config = generate_core_config(base_configuration)
+    
+    # Prepare benchmark options
     benchmark_options = []
     if ENABLE_HEARTBEATS == True:
         benchmark_options.append('enable_heartbeats')
         benchmark_options.append('hb_results_dir=%s' % BENCHMARKS)
 
-    # NOTE: This determines the logging interval! (see issue in forked repo)
-    periodicPower = 1000000
-    #periodicPower = 250000
+    # Configure logging interval
+    periodicPower = 1000000  # Default is 1ms 
     if 'mediumDVFS' in base_configuration:
-        periodicPower = 250000
+        periodicPower = 250000  # 250Î¼s
     if 'fastDVFS' in base_configuration:
-        periodicPower = 100000
+        periodicPower = 100000  # 100Î¼s
 
+    # Configure perforation script if needed
     if not perforation_script:
         perforation_script = 'magic_perforation_rate:' 
    
-    args = '-n {number_cores} -c {config} --benchmarks={benchmark} --no-roi --sim-end=last -senergystats:{periodic} -speriodic-power:{periodic}{script}{perforation}{benchmark_options}' \
+    # Build Sniper command arguments
+    args = '-n {number_cores} -c {config} --benchmarks={benchmark} --no-roi --sim-end=last -senergystats:{periodic} -speriodic-power:{periodic}{script}{perforation}{benchmark_options}{dvfs_config}' \
         .format(number_cores=NUMBER_CORES,
                 config=SNIPER_CONFIG,
                 benchmark=benchmark,
                 periodic=periodicPower,
                 script= ''.join([' -s' + s for s in SCRIPTS]),
                 perforation=' -s'+perforation_script,
-                benchmark_options=''.join([' -B ' + opt for opt in benchmark_options]))
+                benchmark_options=''.join([' -B ' + opt for opt in benchmark_options]),
+                dvfs_config=dvfs_config)
     
     console_output = ''
 
-    print(args)
-
+    # Print configuration details for debugging
+    print("Command arguments:", args)
+    if core_freq_config:
+        print("Per-core frequency configuration:", core_freq_config)
+    
+    # Run the simulator
     run_sniper = os.path.join(BENCHMARKS, 'run-sniper')
     p = subprocess.Popen([run_sniper] + args.split(' '), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=1, cwd=BENCHMARKS)
     with p.stdout:
@@ -155,6 +289,7 @@ def run(base_configuration, benchmark, ignore_error=False, perforation_script: s
 
     p.wait()
 
+    # Generate CPI stack visualization
     try:
         cpistack = subprocess.check_output(['python', os.path.join(SNIPER_BASE, 'tools/cpistack.py')], cwd=BENCHMARKS)
     except:
@@ -165,6 +300,7 @@ def run(base_configuration, benchmark, ignore_error=False, perforation_script: s
 
     ended = datetime.datetime.now()
 
+    # Save results
     save_output(base_configuration, benchmark, console_output, cpistack, started, ended)
 
     if p.returncode != 0:
@@ -364,7 +500,7 @@ def test_static_power():
 
 
 def ondemand_demo():
-    # run([’{:.1f}GHz’.format(4), ’ondemand’, ’fastDVFS’], get_instance(’parsecblackscholes’, 3, input_set=’simsmall’))
+    # run([â€™{:.1f}GHzâ€™.format(4), â€™ondemandâ€™, â€™fastDVFSâ€™], get_instance(â€™parsecblackscholesâ€™, 3, input_set=â€™simsmallâ€™))
     run(['{:.1f}GHz'.format(4), 'ondemand', 'fastDVFS'], get_instance('parsec-blackscholes', 3, input_set='simsmall'))
 
 
@@ -373,83 +509,199 @@ def coldestcore_demo():
 
 
 def asg2_multi_threading_experiments():
-    base_cfg = ['4.0GHz', 'maxFreq', 'slowDVFS']
-    for benchmark in ('parsec-blackscholes', 'parsec-streamcluster'):
-        plsm = get_feasible_parallelisms(benchmark)
-        min_parallelism, max_parallelism = plsm[0], plsm[-1]
-        # ^ not needed
-        for threads in range(1, 5):
+    """
+    Run multi-threading experiments with 1-4 threads for each benchmark.
+    This tests how performance, power, and temperature scale with thread count.
+    """
+    # Base configuration with DVFS settings
+    base_cfg = ['4.0GHz', 'maxFreq', 'slowDVFS', 'testStaticPower', 'dvfs_enabled']
+    
+    # Benchmarks to test
+    benchmarks = ('parsec-blackscholes', 'parsec-streamcluster')
+    
+    # Thread counts to test (1-4 threads)
+    thread_counts = range(1, 5)
+    
+    for benchmark in benchmarks:
+        # Get feasible thread counts for this benchmark
+        feasible_threads = get_feasible_parallelisms(benchmark)
+        
+        # Test each thread count
+        for threads in thread_counts:
+            # Skip if this thread count isn't feasible for this benchmark
+            if threads not in feasible_threads:
+                print("Skipping {} with {} threads (not feasible)".format(benchmark, threads))
+                continue
+                
+            # Create benchmark instance with specified thread count
             inst = get_instance(benchmark, threads, input_set='simsmall')
-            print("[MULT-THR] {benchmark} @ {threads} threads → {inst}".format(benchmark=benchmark, threads=threads, inst=inst))
+            
+            print("[MULT-THR] {benchmark} @ {threads} threads â†’ {inst}".format(
+                benchmark=benchmark, threads=threads, inst=inst))
+            
+            # Run the experiment
             run(base_cfg, inst)
 
 
 def asg2_symmetric_dvfs_experiments():
+    """
+    Run symmetric DVFS experiments with different frequencies.
+    All cores run at the same frequency for each experiment.
+    """
+    # Benchmarks to test
     benches = ('parsec-blackscholes', 'parsec-streamcluster')
-    freqs = [1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0]
+    
+    # Frequencies to test (in GHz)
+    # Full range: [1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0]
+    freqs = [1.0, 2.0, 3.0, 4.0]  # Using 1.0, 2.0, 3.0, 4.0 GHz for clear stepping
+    
     for benchmark in benches:
-        inst = get_instance(benchmark, 4, input_set='simsmall')
+        # Use 3 threads on 4 cores to allow for some thermal headroom
+        inst = get_instance(benchmark, 3, input_set='simsmall')
+        
         for f in freqs:
-            base_cfg = ["{0}GHz".format(f), 'testStaticPower', 'slowDVFS']
-            print("[SYM-DVFS] {benchmark} @ {f}GHz → {inst}".format(benchmark=benchmark, f=f, inst=inst))
+            # Configure with frequency and DVFS settings
+            base_cfg = ["{0}GHz".format(f), 'maxFreq', 'testStaticPower', 'slowDVFS', 'dvfs_enabled']
+            
+            print("[SYM-DVFS] {benchmark} @ {f}GHz â†’ {inst}".format(
+                benchmark=benchmark, f=f, inst=inst))
+            
+            # Run the experiment
             run(base_cfg, inst)
 
 
 def asg2_asymmetric_dvfs_experiments():
+    """
+    Run experiments with asymmetric DVFS settings (different frequencies per core).
+    
+    This function creates multiple asymmetric frequency patterns:
+    - 1H-3L: One core at high frequency (4.0GHz), three cores at low frequency (1.0GHz)
+    - 2H-2L: Two cores at high frequency, two cores at low frequency
+    - 3H-1L: Three cores at high frequency, one core at low frequency
+    """
     benches = ('parsec-blackscholes', 'parsec-streamcluster')
+    
+    # Define asymmetric DVFS patterns
     patterns = {
-        '1H-3L': ['4.0GHz','1.0GHz','1.0GHz','1.0GHz'],
-        '2H-2L': ['4.0GHz','4.0GHz','1.0GHz','1.0GHz'],
-        '3H-1L': ['4.0GHz','4.0GHz','4.0GHz','1.0GHz'],
+        '1H-3L': ['core0:4.0GHz', 'core1:1.0GHz', 'core2:1.0GHz', 'core3:1.0GHz'],
+        '2H-2L': ['core0:4.0GHz', 'core1:4.0GHz', 'core2:1.0GHz', 'core3:1.0GHz'],
+        '3H-1L': ['core0:4.0GHz', 'core1:4.0GHz', 'core2:4.0GHz', 'core3:1.0GHz'],
     }
+    
     for benchmark in benches:
         inst = get_instance(benchmark, 4, input_set='simsmall')
-        for name, freqs in patterns.items():
-            # include e.g. 'core0:4.0GHz' etc. in your base.cfg
-            base_cfg = freqs + ['maxFreq', 'slowDVFS']
-            print("[AsymDVFS:{name}] {benchmark} → {inst}".format(name=name, benchmark=benchmark, inst=inst))
+        for name, freq_configs in patterns.items():
+            # Add DVFS and other configuration options
+            base_cfg = freq_configs + ['maxFreq', 'slowDVFS', 'testStaticPower']
+            
+            print("[AsymDVFS:{name}] {benchmark} â†’ {inst}".format(
+                name=name, benchmark=benchmark, inst=inst))
+            
             run(base_cfg, inst)
 
 
 def asg2_thread_migration_experiments():
+    """
+    Run experiments with different thread migration strategies:
+    - static: No migration (baseline)
+    - coldestCore_1ms: Migrate to coldest core with 1ms epoch
+    - coldestCore_10ms: Migrate to coldest core with 10ms epoch
+    - coldestCore_100us: Migrate to coldest core with 100Î¼s epoch
+    """
     benches = ('parsec-blackscholes', 'parsec-streamcluster')
+    
+    # Define migration policies with their config flags
     policies = {
-        'static':                [],
-        'mig_10ms':              ['migrate10ms'],
-        'mig_1ms':               ['migrate1ms'],
-        'mig_100us':             ['migrate100us'],
-        'thrMigration_20pct':    ['thrMigration20'],
-        'thrMigration_50pct':    ['thrMigration50'],
+        'static': [],  # No migration (baseline)
+        'coldestCore_1ms': ['coldestCore'],  # Default 1ms epoch
+        'coldestCore_10ms': ['coldestCore', 'migrate10ms'],  # 10ms epoch
+        'coldestCore_100us': ['coldestCore', 'migrate100us']  # 100Î¼s epoch
     }
+    
     for benchmark in benches:
-        inst = get_instance(benchmark, 4, input_set='simsmall')
+        inst = get_instance(benchmark, 3, input_set='simsmall')  # Using 3 threads on 4 cores
         for name, extra in policies.items():
-            base_cfg = ['4.0GHz','maxFreq','slowDVFS'] + extra
-            print("[Migration:{name}] {benchmark} → {inst}".format(name=name, benchmark=benchmark, inst=inst))
+            # Add frequency and DVFS settings
+            base_cfg = ['4.0GHz', 'maxFreq', 'slowDVFS', 'testStaticPower', 'dvfs_enabled'] + extra
+            
+            print("[Migration:{name}] {benchmark} â†’ {inst}".format(
+                name=name, benchmark=benchmark, inst=inst))
+            
             run(base_cfg, inst)
 
 
 def asg2_multiprogramming_experiments():
-    splits = [(1,3), (2,2), (3,1)]
+    """
+    Run multi-programming experiments with two benchmarks running concurrently.
+    This tests how the system handles running different benchmarks simultaneously.
+    
+    Various thread splits are tested:
+    - 1+3: blackscholes (1 thread) + streamcluster (3 threads)
+    - 2+2: blackscholes (2 threads) + streamcluster (2 threads)
+    - 3+1: blackscholes (3 threads) + streamcluster (1 thread)
+    """
+    # Thread distribution splits to test
+    splits = [
+        (1, 3),  # blackscholes: 1 thread, streamcluster: 3 threads
+        (2, 2),  # blackscholes: 2 threads, streamcluster: 2 threads
+        (3, 1),  # blackscholes: 3 threads, streamcluster: 1 thread
+    ]
+    
+    # Test each thread distribution
     for a_threads, b_threads in splits:
-        inst_a = get_instance('parsec-blackscholes', a_threads, input_set='simsmall')
-        inst_b = get_instance('parsec-streamcluster', b_threads, input_set='simsmall')
-        bench_str = inst_a + ',' + inst_b
-        base_cfg = ['4.0GHz','maxFreq','slowDVFS']
-        print("[MP:{a_threads}+{b_threads}] BS→{inst_a}  SC→{inst_b}".format(a_threads=a_threads, b_threads=b_threads,
-                                                                             inst_a=inst_a, inst_b=inst_b))
-        run(base_cfg, bench_str)
+        # Check if this thread count is feasible for both benchmarks
+        try:
+            inst_a = get_instance('parsec-blackscholes', a_threads, input_set='simsmall')
+            inst_b = get_instance('parsec-streamcluster', b_threads, input_set='simsmall')
+            
+            # Combine benchmarks with comma separator for multi-programming
+            bench_str = inst_a + ',' + inst_b
+            
+            # Configure with frequency and DVFS settings
+            base_cfg = ['4.0GHz', 'maxFreq', 'slowDVFS', 'testStaticPower', 'dvfs_enabled']
+            
+            print("[MP:{a_threads}+{b_threads}] BSâ†’{inst_a}  SCâ†’{inst_b}".format(
+                a_threads=a_threads, b_threads=b_threads, inst_a=inst_a, inst_b=inst_b))
+            
+            # For multi-programming we need to set the arrival rate
+            # Set arrivalRate=2 to launch both applications at the same time
+            base_cfg.append('arrivalRate=2')
+            
+            # Run the experiment
+            run(base_cfg, bench_str)
+        except Infeasible:
+            print("Skipping multiprogramming with threads {}+{} (not feasible)".format(a_threads, b_threads))
+            continue
 
 
 def main():
-    # example()
-    # ondemand_demo()
-    #test_static_power()
-    # multi_program()
-
-    # example_symmetric_perforation()
-    # example_asymmetric_perforation()
+    """
+    Main function to run experiments.
+    Uncomment the experiment type you want to run.
+    """
+    # Multi-threading experiments (1-4 threads)
+    # asg2_multi_threading_experiments()
+    
+    # Symmetric DVFS experiments (all cores at the same frequency)
+    # asg2_symmetric_dvfs_experiments()
+    
+    # Asymmetric DVFS experiments (different frequencies per core)
+    # asg2_asymmetric_dvfs_experiments()
+    
+    # Thread migration experiments (different migration strategies)
+    # asg2_thread_migration_experiments()
+    
+    # Multi-programming experiments (multiple benchmarks concurrently)
+    # asg2_multiprogramming_experiments()
+    
+    # Run all experiment types in sequence
+    print("Running all experiment types...")
     asg2_multi_threading_experiments()
+    asg2_symmetric_dvfs_experiments()
+    asg2_asymmetric_dvfs_experiments()
+    asg2_thread_migration_experiments()
+    asg2_multiprogramming_experiments()
+    print("All experiments completed.")
 
 
 if __name__ == '__main__':
