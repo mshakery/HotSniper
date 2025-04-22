@@ -367,7 +367,7 @@ void SchedulerOpen::initMigrationPolicy(String policyName) {
 	} else if (policyName == "coldestCore") {
 		float criticalTemperature = Sim()->getCfg()->getFloat(
 		"scheduler/open/migration/coldestCore/criticalTemperature");
-		mappingPolicy = new ColdestCore(performanceCounters, coreRows,
+		migrationPolicy = new ColdestCore(performanceCounters, coreRows,
 		coreColumns, criticalTemperature);
 	} //else if (policyName ="XYZ") {... } //Place to instantiate a new migration logic. Implementation is put in "policies" package.
 	else {
